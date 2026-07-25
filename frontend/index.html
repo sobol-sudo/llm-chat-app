@@ -15,7 +15,12 @@
             Streaming answers like ChatGPT/Cursor
           </div>
         </div>
-        <div class="status" id="ws-status">Connecting...</div>
+        <div class="header-actions">
+          <div class="status" id="ws-status">Connecting...</div>
+          <button type="button" id="retry-btn" class="retry-btn" hidden>
+            Retry
+          </button>
+        </div>
       </header>
 
       <main class="chat-container">
@@ -29,7 +34,9 @@
           rows="1"
           placeholder="Type a message and press Enter..."
         ></textarea>
-        <button type="button" id="send-btn" class="send-btn">Send</button>
+        <button type="button" id="send-btn" class="send-btn" disabled>
+          Send
+        </button>
       </div>
     </div>
 

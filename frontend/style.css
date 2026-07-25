@@ -41,6 +41,12 @@ body {
   margin-top: 2px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status {
   font-size: 12px;
   padding: 4px 10px;
@@ -59,6 +65,30 @@ body {
 .status.offline {
   color: #fecaca;
   border-color: rgba(248, 113, 113, 0.7);
+}
+
+.status.demo {
+  color: #fde68a;
+  border-color: rgba(251, 191, 36, 0.7);
+}
+
+.retry-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(99, 102, 241, 0.7);
+  background: rgba(15, 23, 42, 0.6);
+  color: #c7d2fe;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: rgba(79, 70, 229, 0.25);
+}
+
+.retry-btn[hidden] {
+  display: none;
 }
 
 .chat-container {

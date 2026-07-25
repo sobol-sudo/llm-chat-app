@@ -16,9 +16,9 @@
           </div>
         </div>
         <div class="header-actions">
-          <div class="status" id="ws-status">Connecting...</div>
+          <div class="status" id="ws-status" role="status">Connecting...</div>
           <button type="button" id="retry-btn" class="retry-btn" hidden>
-            Retry
+            Retry server
           </button>
         </div>
       </header>
@@ -27,13 +27,15 @@
         <div id="messages" class="messages"></div>
       </main>
 
-      <div id="message-form" class="input-bar">
+      <div class="input-bar">
         <textarea
           id="message-input"
           class="input"
           rows="1"
+          aria-label="Message"
           placeholder="Type a message and press Enter..."
         ></textarea>
+        <!-- Disabled until the script runs: without it nothing can be sent. -->
         <button type="button" id="send-btn" class="send-btn" disabled>
           Send
         </button>

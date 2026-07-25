@@ -28,6 +28,14 @@ const WS_URL =
 /** Keep the view pinned to the newest reply unless the user scrolled away. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 80;
 
+/**
+ * How long a reply may be silent -- before its first chunk or between two of
+ * them -- before the app stops claiming one is on its way. Both transports
+ * chunk every 80ms, so this only ever fires on a server that has genuinely
+ * stopped answering.
+ */
+const REPLY_SILENCE_TIMEOUT_MS = 20000;
+
 const MAX_INPUT_HEIGHT_PX = 140;
 
 const messagesEl = document.getElementById("messages") as HTMLElement;
@@ -43,6 +51,9 @@ let transport: ChatTransport | null = null;
 let connected = false;
 let isSending = false;
 let bootGeneration = 0;
+
+/** Deadline for the reply currently being waited on, if any. */
+let replyTimer: number | null = null;
 
 /** Last lifecycle state reported by a transport; drives what a send does. */
 let transportState: TransportState = "connecting";
@@ -204,20 +215,81 @@ function updateRetry(): void {
   retryBtnEl.title = WS_URL ? `Try connecting to ${WS_URL} again` : "";
 }
 
+/** What pressing Send will actually do right now, for the button's tooltip. */
+function composerHint(): string {
+  if (queuedText !== null) return "A message is already waiting to be sent";
+  if (isSending) return "Waiting for the current reply to finish";
+  if (connected) return "Send the message";
+  if (transportState === "unavailable") {
+    return 'The server is unavailable - press "Retry server", then send again';
+  }
+  return "Not connected yet: the message is queued and sent on its own";
+}
+
+/**
+ * The button is disabled only in the two states whose label explains the wait
+ * -- a reply in flight, or a message already queued. Being unconnected is not
+ * one of them: a send is then queued or refused with a system line, so the
+ * outcome is defined and the control must stay live. Disabling it there left
+ * pointer and touch users, who have no Enter key, with a grey button and no
+ * way to reach any of that.
+ */
 function updateComposer(): void {
   if (!sendBtnEl) return;
 
-  sendBtnEl.disabled = isSending || queuedText !== null || !connected;
+  sendBtnEl.disabled = isSending || queuedText !== null;
   sendBtnEl.textContent =
     queuedText !== null
       ? "Queued..."
       : isSending
         ? "Waiting for reply..."
         : "Send";
+  sendBtnEl.title = composerHint();
+}
+
+function clearReplyWatchdog(): void {
+  if (replyTimer === null) return;
+  window.clearTimeout(replyTimer);
+  replyTimer = null;
+}
+
+/**
+ * A socket can stay open while the server behind it stops answering: no close
+ * event, no error, just silence. Without a deadline the composer would sit on
+ * "Waiting for reply..." for good under an "Online" pill -- alive-looking and
+ * unusable. The wait is bounded instead, and what was already received stays
+ * in the transcript.
+ */
+function armReplyWatchdog(): void {
+  clearReplyWatchdog();
+
+  replyTimer = window.setTimeout(() => {
+    replyTimer = null;
+    if (!isSending && activeStreams.size === 0) return;
+
+    const startedStreaming = activeStreams.size > 0;
+    activeStreams.clear();
+    setSending(false);
+
+    notify(
+      startedStreaming
+        ? "The reply stopped part-way through and the server went quiet. " +
+            "What arrived is kept above - you can send another message."
+        : "No reply came back within 20 seconds, although the connection is " +
+            "still open. You can send another message."
+    );
+  }, REPLY_SILENCE_TIMEOUT_MS);
 }
 
 function setSending(next: boolean): void {
   isSending = next;
+
+  if (next) {
+    armReplyWatchdog();
+  } else {
+    clearReplyWatchdog();
+  }
+
   updateComposer();
 }
 
@@ -277,6 +349,10 @@ function handleTransportMessage(msg: WSMessage): void {
       content: msg.error || "",
       isSystem: true,
     });
+    // The server has given up on the request, so nothing is streaming any
+    // more. Leaving the stream open would refuse every later send with
+    // "a reply is still streaming" while no reply was ever coming.
+    activeStreams.clear();
     setSending(false);
     return;
   }
@@ -295,6 +371,8 @@ function handleTransportMessage(msg: WSMessage): void {
     }
     current.content += content || "";
     messages[current.index].content = current.content;
+    // Progress: the server is still talking, so the silence deadline restarts.
+    armReplyWatchdog();
     renderMessages();
     return;
   }
@@ -302,6 +380,7 @@ function handleTransportMessage(msg: WSMessage): void {
   if (msg.type === "done" && msg.requestId) {
     activeStreams.delete(msg.requestId);
     if (activeStreams.size === 0) setSending(false);
+    else armReplyWatchdog();
   }
 }
 
@@ -480,6 +559,7 @@ function handleSend(): void {
 
     inputEl.value = "";
     resetInputHeight();
+    inputEl.focus();
     queuedText = text;
     updateComposer();
     renderMessages();
@@ -497,6 +577,9 @@ function handleSend(): void {
 
   inputEl.value = "";
   resetInputHeight();
+  // Clicking the button moves focus off the composer; put it back so the next
+  // message can be typed straight away, exactly as after pressing Enter.
+  inputEl.focus();
   addMessage({ role: "user", content: text });
   setSending(true);
 }

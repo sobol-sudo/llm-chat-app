@@ -37,9 +37,11 @@ Falling back is always reported, never silent. When no `WS_URL` is configured th
 
 If the WebSocket drops after it was established, the client reconnects with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 30s) for at most 5 attempts. After that it stops, shows **Server unavailable**, and offers **Retry server** instead of retrying forever.
 
+A socket can also stay open while the server behind it stops answering — no close, no error, just silence. That wait is bounded as well: if a reply is silent for 20 seconds, before its first chunk or between two of them, the transcript says so, whatever text already arrived is kept, and the composer is released. Both transports chunk every 80 ms, so the deadline only ever fires on a server that has genuinely gone quiet.
+
 ### Sending before the transport is ready
 
-The composer accepts Enter at any time, so every send has a defined outcome and message text is never dropped:
+The composer accepts a send at any time — Enter and the **Send** button behave identically — so every send has a defined outcome and message text is never dropped:
 
 | Transport state | What happens to the text |
 | --- | --- |
@@ -49,6 +51,20 @@ The composer accepts Enter at any time, so every send has a defined outcome and 
 | reply still streaming | Refused. The text stays in the composer until the current reply finishes. |
 
 A queued message that never gets a connection — the retry budget runs out while it waits — is also handed back to the composer rather than left waiting forever.
+
+**Send** is only greyed out in the two states its own label explains — `Waiting for reply...` and `Queued...`. It stays live while the app is connecting, reconnecting or unavailable, because a click there still has a defined outcome; disabling it in those states left pointer and touch users, who have no Enter key, with no way to reach the queue at all.
+
+### Controls
+
+Every control in the UI, and where it leads:
+
+| Control | Action | Shown when | With nothing to show |
+| --- | --- | --- | --- |
+| Message composer (`textarea`) | Enter sends; Shift+Enter adds a newline; the box grows with the text up to 140px | Always | Empty box with a placeholder; an empty send is a no-op |
+| **Send** | Same path as Enter: sends, queues, or refuses with a system line | Always | Disabled only while a reply streams or a message is queued, and labelled with the reason |
+| **Retry server** | Re-runs the whole boot sequence against `WS_URL` | Only when a `WS_URL` is configured *and* is not currently carrying the chat (`unavailable`, or the in-browser fallback stood in for it) | Hidden — with no server configured there is nothing to retry |
+| Status pill | Reports the live transport state: `Connecting...`, `Online`, `Demo mode`, `Demo mode - server unreachable`, `Offline (reconnecting...)`, `Server unavailable` | Always | Never empty; it always names a state |
+| Transcript | Renders user turns, streamed replies and system lines | Always | Empty state explaining what to do and that replies are placeholder text |
 
 ## Project Structure
 

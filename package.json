@@ -4,6 +4,6 @@
   "description": "WebSocket chat with streaming (chunk) responses",
   "private": true,
   "scripts": {
-    "test": "npm test --prefix frontend"
+    "test": "npm test --prefix frontend && npm test --prefix backend"
   }
 }

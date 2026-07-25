@@ -104,6 +104,9 @@ export const assistantMessages = (): string[] =>
 export const systemMessages = (): string[] =>
   bubbles(".message-bubble.system");
 
+/** Every system line as one string, for "did the app say X" assertions. */
+export const systemText = (): string => systemMessages().join(" | ");
+
 export const emptyState = (): Element | null =>
   document.querySelector(".empty-state");
 
@@ -114,4 +117,14 @@ export function pressEnter(text: string): void {
   input.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
   );
+}
+
+/**
+ * Types `text` and clicks Send -- the only path a pointer or touch user has,
+ * since they have no Enter key. A disabled button dispatches no click at all,
+ * so this silently does nothing whenever the control is dead.
+ */
+export function clickSend(text: string): void {
+  composer().value = text;
+  sendButton().click();
 }

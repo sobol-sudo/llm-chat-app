@@ -73,7 +73,9 @@ Every control in the UI, and where it leads:
 │   ├── src/
 │   │   ├── server.ts      # WebSocket server
 │   │   └── types.ts       # TypeScript types
+│   ├── tests/             # Vitest integration suite (runs the built server)
 │   ├── tsconfig.json
+│   ├── vitest.config.ts
 │   └── package.json
 ├── frontend/
 │   ├── src/
@@ -177,21 +179,33 @@ npm run preview
 ## Tests
 
 ```bash
-npm test              # from the repo root, or from frontend/
+npm test              # from the repo root: runs both suites
+npm test --prefix frontend
+npm test --prefix backend
 ```
 
-The suite runs on [Vitest](https://vitest.dev/) in a jsdom environment. It boots the real
-`app.ts` against the real `index.html` markup, with fake timers and a scripted WebSocket
-stand-in, so no network, no server and no wall-clock waiting are involved.
+Both suites run on [Vitest](https://vitest.dev/).
 
-It is a regression suite rather than a coverage exercise, and covers the three failure modes
-that are easy to reintroduce:
+The **frontend** suite runs in jsdom. It boots the real `app.ts` against the real
+`index.html` markup, with fake timers and a scripted WebSocket stand-in, so no network,
+no server and no wall-clock waiting are involved.
+
+The **backend** suite is an integration test: it builds the server, starts it as a real
+process on a free port and drives it over a real WebSocket. That is the only place the
+contract *between* the two packages is checked — the frontend suite can prove the UI
+assembles frames correctly, but never that the server emits the frames it assumes.
+
+It is a regression suite rather than a coverage exercise. Each test pins a failure mode
+that has actually occurred or is easy to reintroduce:
 
 | Area | What is pinned |
 | --- | --- |
-| Chunk protocol | One `requestId` per stream, chunks before the single `done`, 18-character framing, exact reassembly, interleaved streams kept apart, a stale `done` not releasing the composer |
+| Chunk protocol (client) | One `requestId` per stream, chunks before the single `done`, 18-character framing, exact reassembly, interleaved streams kept apart, a stale `done` not releasing the composer |
+| Chunk protocol (server) | The real server greets on connect, then answers with chunks under one id and one terminating `done` with nothing after it; a malformed frame is answered with an `error` and does not take the connection down |
 | Transport fallback | An unreachable `WS_URL` gives up within the 3s deadline, names the failed server in the transcript, shows **Demo mode - server unreachable** and keeps **Retry server** live; with no `WS_URL` nothing is dialled and no failure is claimed |
 | Sending before ready | Enter while connecting queues and flushes on `open`; an exhausted retry budget hands the text back to the composer; `unavailable` and mid-reply sends are refused without losing a character |
+| A server that goes quiet | A socket that opens and never answers, or stops mid-reply, releases the composer within the 20s deadline and keeps whatever text arrived; every chunk restarts that deadline; an `error` frame ends the stream instead of blocking every later send |
+| **Send** as a live control | The button stays clickable while connecting and while the server is unavailable — a disabled button dispatches no click, so those outcomes were keyboard-only — and a click sends, queues or refuses exactly as Enter does |
 
 ## WebSocket Protocol
 

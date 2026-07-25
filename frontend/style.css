@@ -27,6 +27,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -44,6 +45,8 @@ body {
 .header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -140,6 +143,48 @@ body {
   border: none;
   color: #9ca3af;
   font-size: 12px;
+}
+
+/* A queued turn is dimmed and captioned so it never reads as delivered. */
+.message-bubble.pending {
+  opacity: 0.72;
+  background: rgba(79, 70, 229, 0.55);
+  border: 1px dashed rgba(199, 210, 254, 0.7);
+}
+
+.message-note {
+  margin-top: 5px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: #e0e7ff;
+  opacity: 0.85;
+}
+
+.empty-state {
+  margin: 0 auto;
+  padding: 48px 16px;
+  max-width: 420px;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.empty-state-body {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.empty-state-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
 }
 
 .role-badge {

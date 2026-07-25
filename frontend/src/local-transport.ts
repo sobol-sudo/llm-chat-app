@@ -9,10 +9,14 @@ import { generateReply } from "./reply-generator.js";
 const CHUNK_SIZE = 18;
 const CHUNK_DELAY_MS = 80;
 
+/**
+ * Describes the transport only. Why it is in use -- no server configured, or a
+ * configured one that did not answer -- is reported by the caller, which is the
+ * only place that knows.
+ */
 const SYSTEM_GREETING =
   "Local demo mode: replies are generated in your browser and streamed in " +
-  "chunks over the same protocol the WebSocket backend uses. Start the " +
-  "server in /backend and set WS_URL to stream from it instead.";
+  "chunks over the same protocol the WebSocket backend uses.";
 
 function createRequestId(): string {
   const cryptoRef = globalThis.crypto;

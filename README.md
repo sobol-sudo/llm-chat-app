@@ -31,9 +31,24 @@ The frontend talks to a `ChatTransport` (`frontend/src/types.ts`), so the UI nev
 | `WebSocketTransport` | `frontend/src/ws-transport.ts` | `WS_URL` is configured and the server accepts the connection within 3s |
 | `LocalTransport` | `frontend/src/local-transport.ts` | No `WS_URL` is configured, or the configured server does not answer |
 
-`LocalTransport` emits the exact same `system` / `chunk` / `done` messages with the same chunk size (18 characters) and cadence (80 ms) as the server, so the streaming UI runs unchanged. The status pill reads **Demo mode** while it is active, and a system message in the chat says so.
+`LocalTransport` emits the exact same `system` / `chunk` / `done` messages with the same chunk size (18 characters) and cadence (80 ms) as the server, so the streaming UI runs unchanged.
 
-If the WebSocket drops after it was established, the client reconnects with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 30s) for at most 5 attempts. After that it stops, shows **Server unavailable**, and offers a **Retry** button instead of retrying forever.
+Falling back is always reported, never silent. When no `WS_URL` is configured the pill reads **Demo mode**. When a `WS_URL` *is* configured but did not answer, the pill reads **Demo mode - server unreachable**, the transcript names the URL that failed, and a **Retry server** button stays on screen so the real server can be tried again — a stale or dead `WS_URL` can never leave the app looking alive when it is not.
+
+If the WebSocket drops after it was established, the client reconnects with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 30s) for at most 5 attempts. After that it stops, shows **Server unavailable**, and offers **Retry server** instead of retrying forever.
+
+### Sending before the transport is ready
+
+The composer accepts Enter at any time, so every send has a defined outcome and message text is never dropped:
+
+| Transport state | What happens to the text |
+| --- | --- |
+| `open` | Sent. It only joins the transcript once the transport has accepted it. |
+| `connecting` / `reconnecting` | Queued — shown as a dimmed "Queued" bubble and flushed automatically on `open`. |
+| `unavailable` | Refused. The text is handed back to the composer with a system line explaining why. |
+| reply still streaming | Refused. The text stays in the composer until the current reply finishes. |
+
+A queued message that never gets a connection — the retry budget runs out while it waits — is also handed back to the composer rather than left waiting forever.
 
 ## Project Structure
 
@@ -207,7 +222,7 @@ Send a message:
 2. Build command: `npm run build`
 3. Output directory: `dist`
 
-The frontend is a static bundle with no runtime dependency on the backend: if the configured server is unreachable it falls back to the in-browser transport, so a deployed build never lands on a dead connection.
+The frontend is a static bundle with no runtime dependency on the backend: if the configured server is unreachable it falls back to the in-browser transport, so a deployed build never lands on a dead connection. The fallback is announced in the UI — pill, transcript and a **Retry server** button — so a `WS_URL` left pointing at a decommissioned host is visible rather than mistaken for a deliberate demo.
 
 ## License
 

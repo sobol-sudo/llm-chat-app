@@ -28,6 +28,8 @@ const WS_URL =
 /** Keep the view pinned to the newest reply unless the user scrolled away. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 80;
 
+const MAX_INPUT_HEIGHT_PX = 140;
+
 const messagesEl = document.getElementById("messages") as HTMLElement;
 const scrollEl = document.querySelector(".chat-container") as HTMLElement | null;
 const inputEl = document.getElementById("message-input") as HTMLTextAreaElement;
@@ -42,6 +44,19 @@ let connected = false;
 let isSending = false;
 let bootGeneration = 0;
 
+/** Last lifecycle state reported by a transport; drives what a send does. */
+let transportState: TransportState = "connecting";
+
+/** True while a WebSocket URL is configured but the in-browser transport is carrying the chat. */
+let usingFallback = false;
+
+/**
+ * A message typed before the transport was ready. Exactly one may wait at a
+ * time; it is flushed on `open` and handed back to the composer if the
+ * connection turns out to be a dead end, so a send is never lost silently.
+ */
+let queuedText: string | null = null;
+
 const messages: Message[] = [];
 const activeStreams = new Map<string, ActiveStream>();
 
@@ -55,6 +70,83 @@ function addMessage({
   renderMessages();
 }
 
+/** Adds a system line, skipping an immediate repeat of the same text. */
+function notify(content: string): void {
+  const last = messages[messages.length - 1];
+  if (last && last.isSystem && last.content === content) return;
+  addMessage({ role: "assistant", content, isSystem: true });
+}
+
+function buildMessageRow(msg: Message): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "message-row " + (msg.role === "user" ? "user" : "assistant");
+
+  const bubble = document.createElement("div");
+  bubble.className =
+    "message-bubble " +
+    (msg.isSystem ? "system" : msg.role === "user" ? "user" : "assistant");
+
+  if (!msg.isSystem) {
+    const roleBadge = document.createElement("div");
+    roleBadge.className = "role-badge";
+    roleBadge.textContent = msg.role === "user" ? "You" : "Bot";
+    bubble.appendChild(roleBadge);
+  }
+
+  const content = document.createElement("div");
+  content.textContent = msg.content;
+  bubble.appendChild(content);
+
+  if (msg.isSystem) {
+    row.style.justifyContent = "center";
+  }
+
+  row.appendChild(bubble);
+  return row;
+}
+
+/**
+ * The transcript is empty until the transport says something, so the chat area
+ * would otherwise be a blank panel for the whole connection attempt.
+ */
+function buildEmptyState(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "empty-state";
+
+  const title = document.createElement("div");
+  title.className = "empty-state-title";
+  title.textContent = "No messages yet";
+  wrap.appendChild(title);
+
+  const body = document.createElement("p");
+  body.className = "empty-state-body";
+  body.textContent =
+    "Send a message to watch the answer stream back in chunks over the chat protocol.";
+  wrap.appendChild(body);
+
+  const note = document.createElement("p");
+  note.className = "empty-state-note";
+  note.textContent =
+    "Replies are generated placeholder text, not model output.";
+  wrap.appendChild(note);
+
+  return wrap;
+}
+
+/** The waiting message, drawn as a real bubble so it is never invisible. */
+function buildQueuedRow(text: string): HTMLElement {
+  const row = buildMessageRow({ role: "user", content: text });
+  const bubble = row.firstElementChild as HTMLElement | null;
+  if (bubble) bubble.classList.add("pending");
+
+  const note = document.createElement("div");
+  note.className = "message-note";
+  note.textContent = "Queued - will send as soon as the connection is ready";
+  bubble?.appendChild(note);
+
+  return row;
+}
+
 function renderMessages(): void {
   if (!messagesEl) return;
 
@@ -65,34 +157,14 @@ function renderMessages(): void {
 
   messagesEl.innerHTML = "";
 
-  messages.forEach((msg) => {
-    const row = document.createElement("div");
-    row.className =
-      "message-row " + (msg.role === "user" ? "user" : "assistant");
-
-    const bubble = document.createElement("div");
-    bubble.className =
-      "message-bubble " +
-      (msg.isSystem ? "system" : msg.role === "user" ? "user" : "assistant");
-
-    if (!msg.isSystem) {
-      const roleBadge = document.createElement("div");
-      roleBadge.className = "role-badge";
-      roleBadge.textContent = msg.role === "user" ? "You" : "Bot";
-      bubble.appendChild(roleBadge);
+  if (messages.length === 0 && queuedText === null) {
+    messagesEl.appendChild(buildEmptyState());
+  } else {
+    messages.forEach((msg) => messagesEl.appendChild(buildMessageRow(msg)));
+    if (queuedText !== null) {
+      messagesEl.appendChild(buildQueuedRow(queuedText));
     }
-
-    const content = document.createElement("div");
-    content.textContent = msg.content;
-    bubble.appendChild(content);
-
-    if (msg.isSystem) {
-      row.style.justifyContent = "center";
-    }
-
-    row.appendChild(bubble);
-    messagesEl.appendChild(row);
-  });
+  }
 
   if (scrollEl) {
     // Rebuilding the list collapses the scroll height, so the position has to
@@ -115,20 +187,45 @@ function setStatus(text: string, mode: string): void {
   if (mode) statusEl.classList.add(mode);
 }
 
-function setRetryVisible(visible: boolean): void {
+/**
+ * Retry re-runs the whole boot sequence against the configured server, so it
+ * is offered whenever such a server exists and is not currently carrying the
+ * chat -- both after the retry budget runs out and while the in-browser
+ * fallback stands in for an unreachable one.
+ */
+function updateRetry(): void {
   if (!retryBtnEl) return;
-  retryBtnEl.hidden = !visible;
+
+  const offerRetry =
+    Boolean(WS_URL) && (transportState === "unavailable" || usingFallback);
+
+  retryBtnEl.hidden = !offerRetry;
+  retryBtnEl.textContent = "Retry server";
+  retryBtnEl.title = WS_URL ? `Try connecting to ${WS_URL} again` : "";
+}
+
+function updateComposer(): void {
+  if (!sendBtnEl) return;
+
+  sendBtnEl.disabled = isSending || queuedText !== null || !connected;
+  sendBtnEl.textContent =
+    queuedText !== null
+      ? "Queued..."
+      : isSending
+        ? "Waiting for reply..."
+        : "Send";
 }
 
 function setSending(next: boolean): void {
   isSending = next;
-  if (!sendBtnEl) return;
-  sendBtnEl.disabled = next || !connected;
-  sendBtnEl.textContent = next ? "Waiting for reply..." : "Send";
+  updateComposer();
 }
 
 function setConnected(next: boolean): void {
-  if (connected === next) return;
+  if (connected === next) {
+    updateComposer();
+    return;
+  }
   connected = next;
 
   if (!next && activeStreams.size > 0) {
@@ -143,6 +240,25 @@ function setConnected(next: boolean): void {
   // every later send even after a successful reconnect.
   activeStreams.clear();
   setSending(false);
+}
+
+function resetInputHeight(): void {
+  if (!inputEl) return;
+  inputEl.style.height = "auto";
+}
+
+function growInput(): void {
+  if (!inputEl) return;
+  inputEl.style.height = "auto";
+  inputEl.style.height = `${Math.min(inputEl.scrollHeight, MAX_INPUT_HEIGHT_PX)}px`;
+}
+
+/** Puts text the app refused to send back where the user can edit and resend it. */
+function restoreToComposer(text: string): void {
+  if (!inputEl) return;
+  inputEl.value = inputEl.value ? `${text}\n${inputEl.value}` : text;
+  growInput();
+  inputEl.focus();
 }
 
 function handleTransportMessage(msg: WSMessage): void {
@@ -189,34 +305,84 @@ function handleTransportMessage(msg: WSMessage): void {
   }
 }
 
+/** Sends the waiting message now that a transport is open. */
+function flushQueue(): void {
+  if (queuedText === null) return;
+  if (!transport || !transport.isOpen) return;
+
+  const text = queuedText;
+
+  if (!transport.send({ type: "message", content: text })) {
+    queuedText = null;
+    restoreToComposer(text);
+    updateComposer();
+    notify(
+      "The queued message could not be sent. It is back in the composer - try again."
+    );
+    return;
+  }
+
+  queuedText = null;
+  addMessage({ role: "user", content: text });
+  setSending(true);
+}
+
+/** Gives the waiting message back to the user when nothing will ever flush it. */
+function dropQueue(reason: string): void {
+  if (queuedText === null) return;
+
+  const text = queuedText;
+  queuedText = null;
+  restoreToComposer(text);
+  updateComposer();
+  notify(reason);
+}
+
 function handleTransportState(
   state: TransportState,
   kind: TransportKind
 ): void {
+  transportState = state;
+
   switch (state) {
     case "connecting":
       setConnected(false);
       setStatus("Connecting...", "");
-      setRetryVisible(false);
       break;
     case "open":
       setConnected(true);
-      setStatus(
-        kind === "local" ? "Demo mode" : "Online",
-        kind === "local" ? "demo" : "online"
-      );
-      setRetryVisible(false);
+      if (kind === "local") {
+        setStatus(
+          usingFallback ? "Demo mode - server unreachable" : "Demo mode",
+          "demo"
+        );
+      } else {
+        setStatus("Online", "online");
+      }
       break;
     case "reconnecting":
       setConnected(false);
       setStatus("Offline (reconnecting...)", "offline");
-      setRetryVisible(false);
       break;
     case "unavailable":
       setConnected(false);
       setStatus("Server unavailable", "offline");
-      setRetryVisible(true);
       break;
+  }
+
+  updateRetry();
+  updateComposer();
+
+  if (state === "open") {
+    flushQueue();
+    return;
+  }
+
+  if (state === "unavailable") {
+    dropQueue(
+      "The server is unavailable, so the queued message was not sent. " +
+        'It is back in the composer - press "Retry server" and send it again.'
+    );
   }
 }
 
@@ -229,6 +395,10 @@ const handlers: TransportHandlers = {
  * Picks a transport: the configured WebSocket server when it answers, and the
  * in-browser transport otherwise, so the streaming UI always has something to
  * stream instead of stalling on a permanent "connecting" pill.
+ *
+ * A configured server that does not answer is reported in the transcript and
+ * leaves the Retry control on screen: falling back has to look like a
+ * degradation, not like a deliberate demo.
  */
 async function boot(): Promise<void> {
   const generation = ++bootGeneration;
@@ -238,12 +408,19 @@ async function boot(): Promise<void> {
     transport = null;
   }
 
+  usingFallback = false;
+  transportState = "connecting";
   setConnected(false);
-  setRetryVisible(false);
   setStatus("Connecting...", "");
+  updateRetry();
+  renderMessages();
 
   if (WS_URL) {
     const socketTransport = new WebSocketTransport(WS_URL, handlers);
+    // Assigned before the attempt so the `open` handler -- which fires from
+    // inside `start()` -- already has a transport to flush the queue through.
+    transport = socketTransport;
+
     const opened = await socketTransport.start(OPEN_TIMEOUT_MS);
 
     if (generation !== bootGeneration) {
@@ -251,12 +428,19 @@ async function boot(): Promise<void> {
       return;
     }
 
-    if (opened) {
-      transport = socketTransport;
-      return;
-    }
+    if (opened) return;
 
+    if (transport === socketTransport) transport = null;
     socketTransport.dispose();
+
+    usingFallback = true;
+    notify(
+      `Could not reach the WebSocket server at ${WS_URL}. ` +
+        (configuredWsUrl
+          ? "Check that WS_URL points at a running server. "
+          : "Start the server in /backend to stream from it. ") +
+        "Falling back to the in-browser demo transport."
+    );
   }
 
   const localTransport = new LocalTransport(handlers);
@@ -265,36 +449,56 @@ async function boot(): Promise<void> {
 }
 
 function handleSend(): void {
-  if (isSending || activeStreams.size > 0 || !inputEl) return;
+  if (!inputEl) return;
 
   const text = inputEl.value.trim();
   if (!text) return;
 
-  inputEl.value = "";
-  inputEl.style.height = "auto";
-
-  addMessage({ role: "user", content: text });
-
-  if (!transport || !transport.isOpen) {
-    addMessage({
-      role: "assistant",
-      content:
-        "No connection to the server. Please wait for reconnection and try again.",
-      isSystem: true,
-    });
+  if (isSending || activeStreams.size > 0) {
+    notify(
+      "A reply is still streaming. Wait for it to finish, then send this message."
+    );
     return;
   }
 
-  setSending(true);
-
-  if (!transport.send({ type: "message", content: text })) {
-    addMessage({
-      role: "assistant",
-      content: "Failed to send message to the server. Please try again.",
-      isSystem: true,
-    });
-    setSending(false);
+  if (queuedText !== null) {
+    notify(
+      "A message is already waiting for the connection. It will send first."
+    );
+    return;
   }
+
+  // Not ready yet. Queue it while an attempt is genuinely in flight; refuse it
+  // outright once no attempt is left to flush it. Either way the text survives.
+  if (!transport || !transport.isOpen) {
+    if (transportState === "unavailable") {
+      notify(
+        'Not sent: the server is unavailable. Press "Retry server", then send again.'
+      );
+      return;
+    }
+
+    inputEl.value = "";
+    resetInputHeight();
+    queuedText = text;
+    updateComposer();
+    renderMessages();
+    return;
+  }
+
+  // Commit to the transcript only once the transport has accepted the message,
+  // so a failed send leaves the text in the composer instead of an orphan turn.
+  if (!transport.send({ type: "message", content: text })) {
+    notify(
+      "Failed to send the message. It is still in the composer - please try again."
+    );
+    return;
+  }
+
+  inputEl.value = "";
+  resetInputHeight();
+  addMessage({ role: "user", content: text });
+  setSending(true);
 }
 
 if (sendBtnEl) {
@@ -330,10 +534,11 @@ if (inputEl) {
     }
   });
 
-  inputEl.addEventListener("input", () => {
-    inputEl.style.height = "auto";
-    inputEl.style.height = `${Math.min(inputEl.scrollHeight, 140)}px`;
-  });
+  inputEl.addEventListener("input", growInput);
 }
+
+updateComposer();
+updateRetry();
+renderMessages();
 
 void boot();

@@ -67,9 +67,11 @@ A queued message that never gets a connection — the retry budget runs out whil
 │   │   ├── reply-generator.ts  # Placeholder answer text for demo mode
 │   │   ├── types.ts            # Protocol and transport types
 │   │   └── generate-env.ts     # Environment generator
+│   ├── tests/                  # Vitest regression suite
 │   ├── index.html
 │   ├── style.css
 │   ├── vite.config.ts
+│   ├── vitest.config.ts
 │   └── package.json
 └── README.md
 ```
@@ -155,6 +157,25 @@ Or build for production:
 npm run build
 npm run preview
 ```
+
+## Tests
+
+```bash
+npm test              # from the repo root, or from frontend/
+```
+
+The suite runs on [Vitest](https://vitest.dev/) in a jsdom environment. It boots the real
+`app.ts` against the real `index.html` markup, with fake timers and a scripted WebSocket
+stand-in, so no network, no server and no wall-clock waiting are involved.
+
+It is a regression suite rather than a coverage exercise, and covers the three failure modes
+that are easy to reintroduce:
+
+| Area | What is pinned |
+| --- | --- |
+| Chunk protocol | One `requestId` per stream, chunks before the single `done`, 18-character framing, exact reassembly, interleaved streams kept apart, a stale `done` not releasing the composer |
+| Transport fallback | An unreachable `WS_URL` gives up within the 3s deadline, names the failed server in the transcript, shows **Demo mode - server unreachable** and keeps **Retry server** live; with no `WS_URL` nothing is dialled and no failure is claimed |
+| Sending before ready | Enter while connecting queues and flushes on `open`; an exhausted retry budget hands the text back to the composer; `unavailable` and mid-reply sends are refused without losing a character |
 
 ## WebSocket Protocol
 
